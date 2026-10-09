@@ -22,10 +22,31 @@ const defaultWeeklySchedule = (openTime = '08:00', closeTime = '17:00') => ({
 });
 
 const defaultShiftSchedules = () => ({
-  FULL_TIME: { openTime: '08:00', closeTime: '17:00', label: 'Full Time (8:00 AM - 5:00 PM)' },
-  MORNING:   { openTime: '08:00', closeTime: '13:00', label: 'Morning Shift (8:00 AM - 1:00 PM)' },
-  EVENING:   { openTime: '13:00', closeTime: '18:00', label: 'Evening Shift (1:00 PM - 6:00 PM)' },
+  FULL_TIME: { name: 'Full Time', label: 'Full Time', openTime: '08:00', closeTime: '17:00', isOvernight: false },
+  MORNING:   { name: 'Morning Shift', label: 'Morning Shift', openTime: '07:00', closeTime: '14:00', isOvernight: false },
+  AFTERNOON: { name: 'Afternoon Shift', label: 'Afternoon Shift', openTime: '12:00', closeTime: '19:00', isOvernight: false },
+  EVENING:   { name: 'Evening Shift', label: 'Evening Shift', openTime: '14:00', closeTime: '22:00', isOvernight: false },
+  NIGHT:     { name: 'Night Shift', label: 'Night Shift', openTime: '21:00', closeTime: '05:00', isOvernight: true },
+  FLEXIBLE:  { name: 'Flexible Shift', label: 'Flexible Shift', openTime: '08:00', closeTime: '17:00', isOvernight: false },
 });
+
+const defaultAutoCheckoutPolicy = () => ({
+  midnightAutoCheckout: true,
+  dayShiftCutoffTime: '00:00',
+  nightShiftMaxHours: 14,
+});
+
+const extractFirstOpenClose = (weeklySchedule) => {
+  if (!weeklySchedule || typeof weeklySchedule !== 'object') return { openTime: '08:00', closeTime: '17:00' };
+  const days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday'];
+  for (const day of days) {
+    const item = weeklySchedule[day];
+    if (item && item.openTime && item.closeTime && item.closeTime !== '00:00') {
+      return { openTime: item.openTime, closeTime: item.closeTime };
+    }
+  }
+  return { openTime: '08:00', closeTime: '17:00' };
+};
 
 // GET /api/super/organizations — all orgs with full detail
 const listOrgs = async (req, res, next) => {
@@ -43,6 +64,7 @@ const listOrgs = async (req, res, next) => {
             wifiSSID: true, publicIp: true, openTime: true, closeTime: true, overtimeStartAfterCloseMinutes: true, overtimeFeePerHour: true, weeklySchedule: true, breakMinutes: true,
             graceMinutes: true, lateAfterMinutes: true, gracePenalty: true, latePenalty: true, completelyLatePenalty: true, absentPenalty: true,
             overstayPenalty: true,
+            shiftSchedules: true, midnightAutoCheckout: true, dayShiftCutoffTime: true, nightShiftMaxHours: true,
             autoSessionMinutes: true, breakStart: true, breakEnd: true,
             securitySettings: { select: { id: true } },
             _count: { select: { sessions: true } },
@@ -144,6 +166,7 @@ const createOrg = async (req, res, next) => {
           openingTime,
           timezone,
           shiftSchedules: shiftSchedules || defaultShiftSchedules(),
+          autoCheckoutPolicy: req.body.autoCheckoutPolicy || defaultAutoCheckoutPolicy(),
           ...(req.body.smtpHost ? { smtpHost: String(req.body.smtpHost).trim() } : {}),
           ...(req.body.smtpPort ? { smtpPort: parseInt(req.body.smtpPort, 10) || 587 } : {}),
           ...(req.body.smtpUser ? { smtpUser: String(req.body.smtpUser).trim() } : {}),
@@ -168,8 +191,8 @@ const createOrg = async (req, res, next) => {
               // Each org sets its OWN Wi-Fi (Android SSID) + public IP (iOS/web network).
               wifiSSID: (o.wifiSSID && o.wifiSSID.trim()) ? o.wifiSSID.trim() : null,
               publicIp: (o.publicIp && o.publicIp.trim()) ? o.publicIp.trim() : null,
-              openTime:  '00:00',
-              closeTime: '00:00',
+              openTime: (o.openTime && o.openTime !== '00:00') ? o.openTime : extractFirstOpenClose(o.weeklySchedule || defaultWeeklySchedule()).openTime,
+              closeTime: (o.closeTime && o.closeTime !== '00:00') ? o.closeTime : extractFirstOpenClose(o.weeklySchedule || defaultWeeklySchedule()).closeTime,
               overtimeStartAfterCloseMinutes: Number.isFinite(+o.overtimeStartAfterCloseMinutes) ? Math.max(0, parseInt(o.overtimeStartAfterCloseMinutes, 10)) : 0,
               overtimeFeePerHour: Number.isFinite(+o.overtimeFeePerHour) ? Math.max(0, Number(o.overtimeFeePerHour)) : 0,
               breakMinutes: Number.isFinite(+o.breakMinutes) ? parseInt(o.breakMinutes, 10) : 60,
@@ -182,6 +205,10 @@ const createOrg = async (req, res, next) => {
               overstayPenalty: Number.isFinite(+o.overstayPenalty) ? parseInt(o.overstayPenalty, 10) : 0,
               autoSessionMinutes: Number.isFinite(+o.autoSessionMinutes) ? parseInt(o.autoSessionMinutes, 10) : 60,
               weeklySchedule: o.weeklySchedule || defaultWeeklySchedule(),
+              shiftSchedules: o.shiftSchedules || shiftSchedules || defaultShiftSchedules(),
+              midnightAutoCheckout: o.midnightAutoCheckout !== undefined ? Boolean(o.midnightAutoCheckout) : true,
+              dayShiftCutoffTime: o.dayShiftCutoffTime || '00:00',
+              nightShiftMaxHours: Number.isFinite(+o.nightShiftMaxHours) ? parseInt(o.nightShiftMaxHours, 10) : 14,
               breakStart: o.breakStart || null,
               breakEnd:   o.breakEnd   || null,
             },
@@ -191,7 +218,7 @@ const createOrg = async (req, res, next) => {
 
       // Ensure at least one office
       const defaultOffice = createdOffices[0] ?? await tx.office.create({
-        data: { id: uuidv4(), orgId: org.id, name: 'Main Office', address: '', timezone, wifiSSID: null, openTime: '00:00', closeTime: '00:00', weeklySchedule: defaultWeeklySchedule(), breakMinutes: 60, overstayPenalty: 0 },
+        data: { id: uuidv4(), orgId: org.id, name: 'Main Office', address: '', timezone, wifiSSID: null, openTime: '08:00', closeTime: '17:00', weeklySchedule: defaultWeeklySchedule(), breakMinutes: 60, overstayPenalty: 0, shiftSchedules: defaultShiftSchedules(), midnightAutoCheckout: true, dayShiftCutoffTime: '00:00', nightShiftMaxHours: 14 },
       });
 
       // 3. Default security settings for the first office
@@ -339,6 +366,7 @@ const updateOrg = async (req, res, next) => {
           ...(openingTime !== undefined ? { openingTime } : {}),
           ...(timezone !== undefined ? { timezone } : {}),
           ...(shiftSchedules !== undefined ? { shiftSchedules } : {}),
+          ...(req.body.autoCheckoutPolicy !== undefined ? { autoCheckoutPolicy: req.body.autoCheckoutPolicy } : {}),
           ...(req.body.smtpHost !== undefined ? { smtpHost: req.body.smtpHost ? String(req.body.smtpHost).trim() : null } : {}),
           ...(req.body.smtpPort !== undefined ? { smtpPort: parseInt(req.body.smtpPort, 10) || 587 } : {}),
           ...(req.body.smtpUser !== undefined ? { smtpUser: req.body.smtpUser ? String(req.body.smtpUser).trim() : null } : {}),
@@ -372,8 +400,15 @@ const updateOrg = async (req, res, next) => {
         if (o.address   !== undefined) data.address   = o.address;
         if (o.timezone  !== undefined) data.timezone  = o.timezone;
         if (o.wifiSSID  !== undefined) data.wifiSSID  = (o.wifiSSID && o.wifiSSID.trim()) ? o.wifiSSID.trim() : null;
-        if (o.publicIp  !== undefined) data.publicIp  = (o.publicIp && o.publicIp.trim()) ? o.publicIp.trim() : null;
-        if (o.weeklySchedule !== undefined) data.weeklySchedule = o.weeklySchedule || defaultWeeklySchedule();
+        if (o.weeklySchedule !== undefined) {
+          data.weeklySchedule = o.weeklySchedule || defaultWeeklySchedule();
+          const extracted = extractFirstOpenClose(data.weeklySchedule);
+          data.openTime = (o.openTime !== undefined && o.openTime !== '00:00') ? o.openTime : extracted.openTime;
+          data.closeTime = (o.closeTime !== undefined && o.closeTime !== '00:00') ? o.closeTime : extracted.closeTime;
+        }
+        if (o.midnightAutoCheckout !== undefined) data.midnightAutoCheckout = Boolean(o.midnightAutoCheckout);
+        if (o.dayShiftCutoffTime !== undefined) data.dayShiftCutoffTime = o.dayShiftCutoffTime || '00:00';
+        if (o.nightShiftMaxHours !== undefined) data.nightShiftMaxHours = parseInt(o.nightShiftMaxHours, 10) || 14;
         if (o.breakMinutes !== undefined) data.breakMinutes = Number.isFinite(+o.breakMinutes) ? parseInt(o.breakMinutes, 10) : 60;
         if (o.overtimeStartAfterCloseMinutes !== undefined) data.overtimeStartAfterCloseMinutes = Number.isFinite(+o.overtimeStartAfterCloseMinutes) ? Math.max(0, parseInt(o.overtimeStartAfterCloseMinutes, 10)) : 0;
         if (o.overtimeFeePerHour !== undefined) data.overtimeFeePerHour = Number.isFinite(+o.overtimeFeePerHour) ? Math.max(0, Number(o.overtimeFeePerHour)) : 0;
@@ -576,8 +611,12 @@ const updateOfficeSecurity = async (req, res, next) => {
     const b = req.body;
     const officeData = {};
     if (b.wifiSSID  !== undefined) officeData.wifiSSID  = (b.wifiSSID && b.wifiSSID.trim()) ? b.wifiSSID.trim() : null;
-    if (b.publicIp  !== undefined) officeData.publicIp  = (b.publicIp && b.publicIp.trim()) ? b.publicIp.trim() : null;
-    if (b.weeklySchedule !== undefined) officeData.weeklySchedule = b.weeklySchedule || defaultWeeklySchedule();
+    if (b.weeklySchedule !== undefined) {
+      officeData.weeklySchedule = b.weeklySchedule || defaultWeeklySchedule();
+      const extracted = extractFirstOpenClose(officeData.weeklySchedule);
+      officeData.openTime = (b.openTime !== undefined && b.openTime !== '00:00') ? b.openTime : extracted.openTime;
+      officeData.closeTime = (b.closeTime !== undefined && b.closeTime !== '00:00') ? b.closeTime : extracted.closeTime;
+    }
     if (b.breakMinutes !== undefined) officeData.breakMinutes = Number.isFinite(+b.breakMinutes) ? parseInt(b.breakMinutes, 10) : 60;
     if (b.overtimeStartAfterCloseMinutes !== undefined) officeData.overtimeStartAfterCloseMinutes = Number.isFinite(+b.overtimeStartAfterCloseMinutes) ? Math.max(0, parseInt(b.overtimeStartAfterCloseMinutes, 10)) : 0;
     if (b.overtimeFeePerHour !== undefined) officeData.overtimeFeePerHour = Number.isFinite(+b.overtimeFeePerHour) ? Math.max(0, Number(b.overtimeFeePerHour)) : 0;
@@ -589,6 +628,10 @@ const updateOfficeSecurity = async (req, res, next) => {
     if (b.autoSessionMinutes !== undefined) officeData.autoSessionMinutes = parseInt(b.autoSessionMinutes, 10) || 60;
     if (b.breakStart !== undefined) officeData.breakStart = b.breakStart || null;
     if (b.breakEnd   !== undefined) officeData.breakEnd   = b.breakEnd   || null;
+    if (b.midnightAutoCheckout !== undefined) officeData.midnightAutoCheckout = Boolean(b.midnightAutoCheckout);
+    if (b.dayShiftCutoffTime !== undefined)   officeData.dayShiftCutoffTime   = b.dayShiftCutoffTime || '00:00';
+    if (b.nightShiftMaxHours !== undefined)   officeData.nightShiftMaxHours   = Number.isFinite(+b.nightShiftMaxHours) ? parseInt(b.nightShiftMaxHours, 10) : 14;
+    if (b.shiftSchedules !== undefined)       officeData.shiftSchedules       = b.shiftSchedules;
     if (Object.keys(officeData).length) {
       await prisma.office.update({ where: { id: officeId }, data: officeData });
     }
@@ -600,6 +643,7 @@ const updateOfficeSecurity = async (req, res, next) => {
       overtimeStartAfterCloseMinutes: _overtimeDelay, overtimeFeePerHour: _overtimeRate,
       graceMinutes: _g, lateAfterMinutes: _la, gracePenalty: _gp, latePenalty: _lp, completelyLatePenalty: _clp,
       autoSessionMinutes: _as, breakStart: _bs, breakEnd: _be,
+      midnightAutoCheckout: _mac, dayShiftCutoffTime: _dsc, nightShiftMaxHours: _nsm, shiftSchedules: _ss,
       ...settingsData
     } = req.body;
     const settings = await prisma.securitySettings.upsert({
