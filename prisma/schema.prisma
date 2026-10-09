@@ -27,6 +27,7 @@ model Organization {
   timezone                String            @default("Africa/Lagos")
   kioskPasswordHash       String?
   shiftSchedules          Json?
+  autoCheckoutPolicy      Json?
   maxEmployees            Int?              @default(20)
   maxKiosks               Int?              @default(1)
   maxDesktopAdmins        Int?              @default(1)
@@ -55,6 +56,9 @@ model Organization {
   payslipRecords          PayslipRecord[]
   attendanceEvents        AttendanceEvent[]
   workEvents              WorkEvent[]
+  salesImports            SalesBatchImport[]
+  salesTransactions       SalesTransaction[]
+  salesMonthlySummaries   SalesMonthlySummary[]
 
   @@map("organizations")
 }
@@ -86,6 +90,10 @@ model Office {
   completelyLatePenalty          Int                 @default(0)
   absentPenalty                  Int                 @default(0)
   overstayPenalty                Int                 @default(0)
+  shiftSchedules                 Json?
+  midnightAutoCheckout           Boolean?            @default(true)
+  dayShiftCutoffTime             String?             @default("00:00")
+  nightShiftMaxHours             Int?                @default(14)
   sessions                       AttendanceSession[]
   organization                   Organization        @relation(fields: [orgId], references: [id], onDelete: Cascade)
   employees                      User[]              @relation("OfficeEmployees")
@@ -390,6 +398,9 @@ model AttendanceRecord {
   checkOutSource       AttendanceSource?
   checkInRecordedById  String?
   checkOutRecordedById String?
+  isAutoCheckedOut     Boolean           @default(false)
+  autoCheckoutReason   String?
+  shiftTypeSnapshot    String?
   lifecycleState       String            @default("FINALIZED")
   recordHash           String?
   rulesSnapshot        Json?
@@ -893,5 +904,78 @@ model PayslipRecord {
   @@unique([employeeId, year, month])
   @@index([orgId, year, month])
   @@map("payslip_records")
+}
+
+model SalesBatchImport {
+  id             String             @id @default(uuid())
+  orgId          String
+  fileName       String
+  fileFormat     String             // XLSX, CSV, SQLITE, JSON
+  fileHash       String             // SHA-256
+  totalRows      Int                @default(0)
+  importedRows   Int                @default(0)
+  skippedRows    Int                @default(0)
+  detectedPeriod String             // e.g. "January 2026"
+  uploadedById   String
+  uploadedAt     DateTime           @default(now())
+  metadata       Json?
+  organization   Organization       @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  transactions   SalesTransaction[]
+
+  @@index([orgId, uploadedAt])
+  @@map("sales_batch_imports")
+}
+
+model SalesTransaction {
+  id              String           @id @default(uuid())
+  orgId           String
+  importBatchId   String
+  transactionDate DateTime         @db.Date
+  year            Int
+  month           Int              // 1-12
+  day             Int
+  invoiceId       String?
+  productName     String
+  productSku      String?
+  categoryName    String?
+  quantity        Float            @default(1)
+  unitPrice       Float            @default(0)
+  revenue         Float            @default(0)
+  unitCost        Float?
+  totalCost       Float?
+  profit          Float?
+  profitMargin    Float?           // percentage e.g. 35.5
+  customerName    String?
+  salespersonName String?
+  dedupeHash      String           @unique
+  createdAt       DateTime         @default(now())
+  organization    Organization     @relation(fields: [orgId], references: [id], onDelete: Cascade)
+  batch           SalesBatchImport @relation(fields: [importBatchId], references: [id], onDelete: Cascade)
+
+  @@index([orgId, year, month])
+  @@index([orgId, productName])
+  @@index([orgId, categoryName])
+  @@map("sales_transactions")
+}
+
+model SalesMonthlySummary {
+  id                String       @id @default(uuid())
+  orgId             String
+  year              Int
+  month             Int          // 1-12
+  totalRevenue      Float        @default(0)
+  totalCost         Float?
+  totalProfit       Float?
+  profitMargin      Float?
+  totalUnitsSold    Float        @default(0)
+  uniqueProducts    Int          @default(0)
+  totalTransactions Int          @default(0)
+  averageOrderValue Float        @default(0)
+  hasCostData       Boolean      @default(false)
+  updatedAt         DateTime     @updatedAt
+  organization      Organization @relation(fields: [orgId], references: [id], onDelete: Cascade)
+
+  @@unique([orgId, year, month])
+  @@map("sales_monthly_summaries")
 }
 
