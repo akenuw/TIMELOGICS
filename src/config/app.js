@@ -23,6 +23,7 @@ const adminRoutes      = require('../routes/admin');
 const superAdminRoutes = require('../routes/superAdmin');
 const studentRoutes    = require('../routes/students');
 const payrollRoutes    = require('../routes/payroll');
+const workHistoryRoutes = require('../routes/workHistory');
 
 function createApp() {
   const app = express();
@@ -145,6 +146,7 @@ function createApp() {
   app.use('/api/super',      superAdminRoutes);
   app.use('/api/students',   studentRoutes);
   app.use('/api/payroll',    payrollRoutes);
+  app.use('/api/work-history', workHistoryRoutes);
 
   // 404 & error handling
   app.use(notFound);
