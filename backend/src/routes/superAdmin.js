@@ -1,0 +1,118 @@
+const router = require('express').Router();
+const { body } = require('express-validator');
+const ctrl = require('../controllers/superAdminController');
+const { authenticate } = require('../middleware/auth');
+const { isSuperAdmin } = require('../middleware/roleGuard');
+const { validate } = require('../middleware/validate');
+const { isValidTimeZone } = require('../utils/attendanceClock');
+
+const organizationPolicyValidators = [
+  body('allowDeviceCheckIn').optional().isBoolean().toBoolean(),
+  body('allowManualCheckIn').optional().isBoolean().toBoolean(),
+  body('hasStudents').optional().isBoolean().toBoolean(),
+  body('openingTime').optional().matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/).withMessage('openingTime must use HH:mm'),
+  body('timezone').optional().custom((value) => {
+    if (!isValidTimeZone(value)) throw new Error('Invalid organization timezone');
+    return true;
+  }),
+  body('offices.*.openTime').optional().matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  body('offices.*.closeTime').optional().matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  body('offices.*.timezone').optional().custom((value) => {
+    if (!isValidTimeZone(value)) throw new Error('Invalid office timezone');
+    return true;
+  }),
+  body('offices.*.graceMinutes').optional().isInt({ min: 0 }),
+  body('offices.*.lateAfterMinutes').optional().isInt({ min: 1 }).withMessage('lateAfterMinutes must be at least 1 minute'),
+  body('offices.*.gracePenalty').optional().isInt({ min: 0 }),
+  body('offices.*.latePenalty').optional().isInt({ min: 0 }),
+  body('offices.*.completelyLatePenalty').optional().isInt({ min: 0 }),
+  body('offices.*.absentPenalty').optional().isInt({ min: 0 }),
+  body('offices').optional().custom((offices) => {
+    for (const office of offices || []) {
+      if (Number(office.lateAfterMinutes ?? 90) < Number(office.graceMinutes ?? 30)) {
+        throw new Error('Each office late-after threshold must be greater than or equal to its grace period');
+      }
+    }
+    return true;
+  }),
+];
+
+const breakPolicyValidators = [
+  body('breakStart').optional({ nullable: true }).matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  body('breakEnd').optional({ nullable: true }).matches(/^(?:[01]\d|2[0-3]):[0-5]\d$/),
+  body('maxLunchMinutes').optional().isInt({ min: 0 }),
+  body('maxShortBreaks').optional().isInt({ min: 0 }),
+  body('maxShortBreakMinutes').optional().isInt({ min: 0 }),
+  body('totalDailyBreakLimit').optional().isInt({ min: 0 }),
+  body('autoEndAfterMinutes').optional().isInt({ min: 1 }),
+];
+
+const { validateStrongPassword } = require('../utils/passwordPolicy');
+
+// All routes require authentication + SUPER_ADMIN role
+router.use(authenticate, isSuperAdmin);
+
+router.get('/stats',                             ctrl.systemStats);
+router.get('/notifications',                     ctrl.getNotifications);
+router.get('/organizations',                     ctrl.listOrgs);
+router.post('/organizations', [
+  body('name').notEmpty().withMessage('Organization name is required'),
+  body('admin.firstName').trim().notEmpty().withMessage('Admin first name is required'),
+  body('admin.lastName').trim().notEmpty().withMessage('Admin last name is required'),
+  body('admin.email').isEmail().normalizeEmail().withMessage('Valid admin email required'),
+  body('admin.password').custom((val) => {
+    const check = validateStrongPassword(val);
+    if (!check.valid) throw new Error(check.message);
+    return true;
+  }),
+  ...organizationPolicyValidators,
+], validate, ctrl.createOrg);
+router.put('/organizations/:id', [
+  body('name').optional().trim().notEmpty(),
+  ...organizationPolicyValidators,
+], validate, ctrl.updateOrg);
+router.delete('/organizations/:id',              ctrl.deleteOrg);
+router.get('/organizations/:id/users',           ctrl.orgUsers);
+router.post('/organizations/:id/generate-code',   ctrl.generateOrgActivationCode);
+router.get('/organizations/:id/activation-codes', ctrl.getOrgActivationCodes);
+router.post('/organizations/:id/manual-renew',    ctrl.manualRenewOrgSubscription);
+router.put('/organizations/:id/suspend',          ctrl.suspendOrganization);
+router.put('/organizations/:id/unsuspend',        ctrl.unsuspendOrganization);
+router.get('/organizations/:id/leave-policy',    ctrl.getLeavePolicy);
+router.put('/organizations/:id/leave-policy',    ctrl.setLeavePolicy);
+router.post('/organizations/:orgId/departments', [
+  body('name').notEmpty().withMessage('Department name is required'),
+  ...breakPolicyValidators,
+], validate, ctrl.addDepartment);
+router.get('/departments/:departmentId/break-policy', ctrl.getDepartmentBreakPolicy);
+router.put('/departments/:departmentId/break-policy', breakPolicyValidators, validate, ctrl.updateDepartmentBreakPolicy);
+router.get('/offices/:officeId/security',        ctrl.officeSecurityDetail);
+router.put('/offices/:officeId/settings',        ctrl.updateOfficeSecurity);
+router.get('/reports',                           ctrl.systemReport);
+router.get('/employees/:userId/records',         ctrl.employeeFullRecord);
+router.put('/employees/:userId/reemploy',        ctrl.reemployEmployee);
+
+// User management: suspend/activate ADMINS only; reassign EMPLOYEES only
+router.put('/profile',                           ctrl.updateProfile);
+router.post('/reset',                            ctrl.resetSystem);
+router.put('/users/:userId/suspend',             ctrl.suspendAdmin);
+router.put('/users/:userId/activate',            ctrl.activateAdmin);
+router.put('/users/:userId/name',                ctrl.renameAdmin);
+
+router.put('/users/:userId/password', [
+  body('newPassword').custom((val) => {
+    const check = validateStrongPassword(val);
+    if (!check.valid) throw new Error(check.message);
+    return true;
+  }),
+], validate, ctrl.resetAdminPassword);
+router.put('/users/:userId/office',              ctrl.reassignUserOffice);
+router.put('/users/:userId/reassign',            ctrl.reassignEmployee);
+router.get('/audit-logs',                        ctrl.getAuditLogs);
+
+// Device management across organizations: view and unlock
+router.get('/devices',                           ctrl.listDevices);
+router.put('/devices/:id/unlock',                ctrl.unlockDevice);
+router.delete('/devices/:id',                    ctrl.deleteDevice);
+
+module.exports = router;
